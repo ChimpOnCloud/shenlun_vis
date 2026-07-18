@@ -4,7 +4,7 @@ import { Document, Page } from 'react-pdf';
 export default function PdfPane({
   pane, annotations, annotateMode, draft, selectedId,
   onPageClick, onCommitDraft, onCancelDraft, onSelect, onUpdate, onDelete,
-  onZoom, onRemove, onNumPages, registerPageRef,
+  onZoom, onRemove, onMissingFile, onNumPages, registerPageRef,
 }) {
   const scrollRef = useRef(null);
   const [width, setWidth] = useState(0);
@@ -46,6 +46,44 @@ export default function PdfPane({
   }
 
   const pageWidth = Math.max(200, (width - 24) * pane.scale);
+
+  if (pane.missing) {
+    return (
+      <section className="pane">
+        <div className="pane-header">
+          <span className="pane-title" title={pane.name}>{pane.name}</span>
+          <button className="close" title="移除该文件" onClick={onRemove}>×</button>
+        </div>
+        <div
+          className="missing"
+          onDragOver={(e) => e.preventDefault()}
+          onDrop={(e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const f = e.dataTransfer.files[0];
+            if (f) onMissingFile(f);
+          }}
+        >
+          <p>本机找不到这份文件（PDF 只保存在原浏览器里）</p>
+          <p className="missing-name">{pane.name}</p>
+          <label className="btn">
+            重新拖入或点击选择
+            <input
+              type="file"
+              accept="application/pdf"
+              hidden
+              onChange={(e) => {
+                const f = e.target.files[0];
+                if (f) onMissingFile(f);
+                e.target.value = '';
+              }}
+            />
+          </label>
+          <p className="hint">批注都还在云端，文件恢复后会自动对应显示</p>
+        </div>
+      </section>
+    );
+  }
 
   return (
     <section className="pane">
