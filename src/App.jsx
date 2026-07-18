@@ -44,6 +44,8 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [saveState, setSaveState] = useState('saved');
   const [busy, setBusy] = useState(false);
+  const [showSidebar, setShowSidebar] = useState(true);
+  const [showPanel, setShowPanel] = useState(true);
   const pageRefs = useRef(new Map());
   const draftLoaded = useRef(false);
   const isDraft = currentId === null;
@@ -331,6 +333,20 @@ export default function App() {
         >
           {annotateMode ? '退出批注模式' : '添加批注'}
         </button>
+        <button
+          className={`btn ${showSidebar ? 'active' : ''}`}
+          title="显示/隐藏左侧会话栏"
+          onClick={() => setShowSidebar(!showSidebar)}
+        >
+          会话栏
+        </button>
+        <button
+          className={`btn ${showPanel ? 'active' : ''}`}
+          title="显示/隐藏右侧批注列表"
+          onClick={() => setShowPanel(!showPanel)}
+        >
+          批注列表
+        </button>
         <span className={`save-state ${saveState}`}>
           {busy && '正在从云端下载文件…'}
           {!busy && isDraft && '草稿仅保存在本机'}
@@ -345,13 +361,15 @@ export default function App() {
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}
       >
-        <SessionSidebar
-          sessions={sessions}
-          currentId={currentId}
-          onOpen={openSession}
-          onDelete={deleteSession}
-          onNew={backToDraft}
-        />
+        {showSidebar && (
+          <SessionSidebar
+            sessions={sessions}
+            currentId={currentId}
+            onOpen={openSession}
+            onDelete={deleteSession}
+            onNew={backToDraft}
+          />
+        )}
         {panes.length === 0 ? (
           <DropZone onFiles={addFiles} />
         ) : (
@@ -381,7 +399,7 @@ export default function App() {
             ))}
           </div>
         )}
-        {panes.length > 0 && (
+        {panes.length > 0 && showPanel && (
           <AnnotationPanel
             panes={panes}
             annotations={annotations}
