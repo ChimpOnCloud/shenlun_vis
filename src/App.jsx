@@ -257,10 +257,11 @@ export default function App() {
     await refreshSessions();
   }
 
-  async function moveSessionCategory(s) {
-    const category = pickCategory();
-    if (!category || category === s.category) return;
-    await setSessionCategory(s.id, category);
+  async function moveSessionCategory(s, category) {
+    const target = category === undefined ? pickCategory() : (category || null);
+    if (!target && category === undefined) return;
+    if (target === (s.category || null)) return;
+    await setSessionCategory(s.id, target);
     await refreshSessions();
   }
 
