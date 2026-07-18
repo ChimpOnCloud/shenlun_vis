@@ -4,7 +4,10 @@ import {
   addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query,
   serverTimestamp, updateDoc, writeBatch,
 } from 'firebase/firestore';
-import { db, isFirebaseConfigured } from './firebase';
+import { db, isFirebaseConfigured, rtdb } from './firebase';
+import {
+  downloadSessionFile, removeCloudFile, removeCloudSessionFiles, uploadSessionFile,
+} from './cloud-files';
 import {
   clearDraftFiles, loadDraftFile, loadDraftFiles, removeDraftFile,
   loadSessionFile, removeSessionFile, removeSessionFiles,
@@ -40,6 +43,7 @@ export default function App() {
   const [draft, setDraft] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
   const [saveState, setSaveState] = useState('saved');
+  const [busy, setBusy] = useState(false);
   const pageRefs = useRef(new Map());
   const draftLoaded = useRef(false);
   const isDraft = currentId === null;
@@ -85,8 +89,20 @@ export default function App() {
 
   async function openSession(s) {
     if (s.id === currentId) return;
+    setBusy(true);
     const newPanes = await Promise.all((s.files || []).map(async (f) => {
-      const rec = await loadSessionFile(s.id, f.key);
+      let rec = await loadSessionFile(s.id, f.key);
+      if (!rec && rtdb) {
+        try {
+          const cloud = await downloadSessionFile(s.id, f.key);
+          if (cloud) {
+            await saveSessionFile(s.id, f.key, cloud.name, cloud.blob);
+            rec = cloud;
+          }
+        } catch {
+          // 网络失败时按缺失处理，用户可手动拖入
+        }
+      }
       return {
         key: f.key,
         name: f.name,
@@ -102,6 +118,7 @@ export default function App() {
     setDraft(null);
     setSelectedId(null);
     setCurrentId(s.id);
+    setBusy(false);
   }
 
   async function backToDraft() {
@@ -125,8 +142,13 @@ export default function App() {
     const newPanes = [];
     for (const file of files) {
       const key = crypto.randomUUID();
-      if (isDraft) await saveDraftFile(key, file);
-      else await saveSessionFile(currentId, key, file.name, file);
+      if (isDraft) {
+        await saveDraftFile(key, file);
+      } else {
+        await saveSessionFile(currentId, key, file.name, file);
+        const synced = await uploadSessionFile(currentId, key, file.name, file);
+        if (!synced && rtdb) window.alert(`「${file.name}」未能同步到云端（超过 10MB 或网络问题），其他设备需手动拖入`);
+      }
       newPanes.push({ key, name: file.name, url: URL.createObjectURL(file), numPages: 0, scale: 1 });
     }
     const all = [...panes, ...newPanes];
@@ -165,7 +187,11 @@ export default function App() {
     }
     for (const p of panes) {
       const rec = await loadDraftFile(p.key);
-      if (rec) await saveSessionFile(sessionRef.id, p.key, p.name, rec.blob);
+      if (rec) {
+        await saveSessionFile(sessionRef.id, p.key, p.name, rec.blob);
+        const synced = await uploadSessionFile(sessionRef.id, p.key, p.name, rec.blob);
+        if (!synced && rtdb) window.alert(`「${p.name}」未能同步到云端（超过 10MB 或网络问题），其他设备需手动拖入`);
+      }
     }
     await clearDraftFiles();
     localStorage.removeItem(DRAFT_ANN_KEY);
@@ -178,6 +204,7 @@ export default function App() {
     for (const d of annSnap.docs) await deleteDoc(d.ref);
     await deleteDoc(doc(db, 'sessions', s.id));
     await removeSessionFiles(s.id);
+    await removeCloudSessionFiles(s.id);
     if (currentId === s.id) await backToDraft();
   }
 
@@ -191,6 +218,7 @@ export default function App() {
       setAnnotations((a) => a.filter((x) => x.fileKey !== key));
     } else {
       await removeSessionFile(currentId, key);
+      await removeCloudFile(currentId, key);
       await updateDoc(doc(db, 'sessions', currentId), {
         files: rest.map(({ key: k, name }) => ({ key: k, name })),
       });
@@ -265,6 +293,7 @@ export default function App() {
   async function handleMissingFile(fileKey, file) {
     if (file.type !== 'application/pdf' || isDraft) return;
     await saveSessionFile(currentId, fileKey, file.name, file);
+    await uploadSessionFile(currentId, fileKey, file.name, file);
     setPanes((p) => p.map((x) => (
       x.key === fileKey ? { ...x, url: URL.createObjectURL(file), missing: false } : x
     )));
@@ -303,9 +332,10 @@ export default function App() {
           {annotateMode ? '退出批注模式' : '添加批注'}
         </button>
         <span className={`save-state ${saveState}`}>
-          {isDraft && '草稿仅保存在本机'}
-          {!isDraft && saveState === 'saving' && '保存中…'}
-          {!isDraft && saveState === 'saved' && '已同步到 Firebase'}
+          {busy && '正在从云端下载文件…'}
+          {!busy && isDraft && '草稿仅保存在本机'}
+          {!busy && !isDraft && saveState === 'saving' && '保存中…'}
+          {!busy && !isDraft && saveState === 'saved' && '已同步到 Firebase'}
         </span>
         {isDraft && <button className="btn danger" onClick={clearDraft}>清空</button>}
       </header>
