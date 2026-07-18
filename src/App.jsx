@@ -1,13 +1,13 @@
 import { useEffect, useRef, useState } from 'react';
 import { pdfjs } from 'react-pdf';
 import {
-  addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query,
-  serverTimestamp, updateDoc, writeBatch,
-} from 'firebase/firestore';
-import { db, isFirebaseConfigured, rtdb } from './firebase';
-import {
-  cloudFileExists, downloadSessionFile, removeCloudFile, removeCloudSessionFiles, uploadSessionFile,
+  cloudFileExists, cloudSyncEnabled, downloadSessionFile,
+  removeCloudFile, removeCloudSessionFiles, uploadSessionFile,
 } from './cloud-files';
+import {
+  addCloudAnnotation, createSession, deleteCloudAnnotation, deleteCloudSession,
+  listAnnotations, listSessions, updateCloudAnnotation, updateSessionFiles,
+} from './cloud-db';
 import {
   clearDraftFiles, loadDraftFile, loadDraftFiles, removeDraftFile,
   loadSessionFile, removeSessionFile, removeSessionFiles,
@@ -64,20 +64,36 @@ export default function App() {
     })();
   }, []);
 
+  async function refreshSessions() {
+    if (!cloudSyncEnabled) return;
+    try {
+      setSessions(await listSessions());
+    } catch (e) {
+      console.error('加载会话列表失败:', e);
+    }
+  }
+
   useEffect(() => {
-    if (!isFirebaseConfigured) return undefined;
-    const q = query(collection(db, 'sessions'), orderBy('createdAt', 'desc'));
-    return onSnapshot(q, (snap) => {
-      setSessions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-    });
+    refreshSessions();
+    const timer = setInterval(refreshSessions, 10000);
+    return () => clearInterval(timer);
   }, []);
 
   useEffect(() => {
-    if (!currentId || !isFirebaseConfigured) return undefined;
-    return onSnapshot(collection(db, 'sessions', currentId, 'annotations'), (snap) => {
-      setAnnotations(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
-      setSaveState('saved');
-    });
+    if (!currentId || !cloudSyncEnabled) return undefined;
+    let cancelled = false;
+    (async () => {
+      try {
+        const anns = await listAnnotations(currentId);
+        if (!cancelled) {
+          setAnnotations(anns);
+          setSaveState('saved');
+        }
+      } catch (e) {
+        console.error('加载批注失败:', e);
+      }
+    })();
+    return () => { cancelled = true; };
   }, [currentId]);
 
   useEffect(() => {
@@ -95,11 +111,11 @@ export default function App() {
     setBusy(true);
     const newPanes = await Promise.all((s.files || []).map(async (f) => {
       let rec = await loadSessionFile(s.id, f.key);
-      if (rec && rtdb) {
+      if (rec && cloudSyncEnabled) {
         cloudFileExists(s.id, f.key).then((exists) => {
           if (!exists) uploadSessionFile(s.id, f.key, f.name, rec.blob);
         });
-      } else if (!rec && rtdb) {
+      } else if (!rec && cloudSyncEnabled) {
         try {
           const cloud = await downloadSessionFile(s.id, f.key);
           if (cloud) {
@@ -154,21 +170,19 @@ export default function App() {
       } else {
         await saveSessionFile(currentId, key, file.name, file);
         const synced = await uploadSessionFile(currentId, key, file.name, file);
-        if (!synced && rtdb) window.alert(`「${file.name}」未能同步到云端（超过 50MB 或网络问题），其他设备需手动拖入`);
+        if (!synced && cloudSyncEnabled) window.alert(`「${file.name}」未能同步到云端（超过 50MB 或网络问题），其他设备需手动拖入`);
       }
       newPanes.push({ key, name: file.name, url: URL.createObjectURL(file), numPages: 0, scale: 1 });
     }
     const all = [...panes, ...newPanes];
     setPanes(all);
     if (!isDraft) {
-      await updateDoc(doc(db, 'sessions', currentId), {
-        files: all.map(({ key, name }) => ({ key, name })),
-      });
+      await updateSessionFiles(currentId, all.map(({ key, name }) => ({ key, name })));
     }
   }
 
   async function saveToCloud() {
-    if (!isFirebaseConfigured) return;
+    if (!cloudSyncEnabled) return;
     if (!panes.length) {
       window.alert('请先拖入 PDF 文件');
       return;
@@ -176,15 +190,15 @@ export default function App() {
     const name = window.prompt('给这次对比起个名字：', `对比 ${new Date().toLocaleString('zh-CN')}`);
     if (name === null) return;
     setSaveState('saving');
-    const sessionRef = doc(collection(db, 'sessions'));
+    const sessionId = crypto.randomUUID();
     const failed = [];
     let done = 0;
     setSaveProgress({ done, total: panes.length });
     for (const p of panes) {
       const rec = await loadDraftFile(p.key);
       if (rec) {
-        await saveSessionFile(sessionRef.id, p.key, p.name, rec.blob);
-        const synced = await uploadSessionFile(sessionRef.id, p.key, p.name, rec.blob);
+        await saveSessionFile(sessionId, p.key, p.name, rec.blob);
+        const synced = await uploadSessionFile(sessionId, p.key, p.name, rec.blob);
         if (!synced) failed.push(p.name);
       } else {
         failed.push(p.name);
@@ -192,26 +206,19 @@ export default function App() {
       done += 1;
       setSaveProgress({ done, total: panes.length });
     }
-    await setDoc(sessionRef, {
+    await createSession(sessionId, {
       name: name.trim() || '未命名对比',
-      createdAt: serverTimestamp(),
       files: panes.map(({ key, name: n }) => ({ key, name: n })),
     });
-    if (annotations.length) {
-      const batch = writeBatch(db);
-      for (const a of annotations) {
-        const { id, ...data } = a;
-        batch.set(doc(collection(db, 'sessions', sessionRef.id, 'annotations')), {
-          ...data,
-          createdAt: serverTimestamp(),
-        });
-      }
-      await batch.commit();
-    }
+    await Promise.all(annotations.map((a) => {
+      const { id, ...data } = a;
+      return addCloudAnnotation(sessionId, id, data);
+    }));
     setSaveProgress(null);
     await clearDraftFiles();
     localStorage.removeItem(DRAFT_ANN_KEY);
-    setCurrentId(sessionRef.id);
+    await refreshSessions();
+    setCurrentId(sessionId);
     if (failed.length) {
       window.alert(`以下文件未能同步到云端，下次在本机打开该会话时会自动重试：\n${failed.join('\n')}`);
     }
@@ -219,11 +226,10 @@ export default function App() {
 
   async function deleteSession(s) {
     if (!window.confirm(`删除「${s.name}」及其所有批注？此操作不可恢复。`)) return;
-    const annSnap = await getDocs(collection(db, 'sessions', s.id, 'annotations'));
-    for (const d of annSnap.docs) await deleteDoc(d.ref);
-    await deleteDoc(doc(db, 'sessions', s.id));
+    await deleteCloudSession(s.id);
     await removeSessionFiles(s.id);
     await removeCloudSessionFiles(s.id);
+    await refreshSessions();
     if (currentId === s.id) await backToDraft();
   }
 
@@ -238,13 +244,10 @@ export default function App() {
     } else {
       await removeSessionFile(currentId, key);
       await removeCloudFile(currentId, key);
-      await updateDoc(doc(db, 'sessions', currentId), {
-        files: rest.map(({ key: k, name }) => ({ key: k, name })),
-      });
+      await updateSessionFiles(currentId, rest.map(({ key: k, name }) => ({ key: k, name })));
       const doomed = annotations.filter((a) => a.fileKey === key);
-      for (const a of doomed) {
-        await deleteDoc(doc(db, 'sessions', currentId, 'annotations', a.id));
-      }
+      await Promise.all(doomed.map((a) => deleteCloudAnnotation(currentId, a.id)));
+      setAnnotations((a) => a.filter((x) => x.fileKey !== key));
     }
   }
 
@@ -267,10 +270,10 @@ export default function App() {
       return;
     }
     setSaveState('saving');
-    await addDoc(collection(db, 'sessions', currentId, 'annotations'), {
-      ...data,
-      createdAt: serverTimestamp(),
-    });
+    const id = crypto.randomUUID();
+    await addCloudAnnotation(currentId, id, data);
+    setAnnotations((a) => [...a, { id, ...data, createdAt: Date.now() }]);
+    setSaveState('saved');
   }
 
   async function updateAnnotation(id, text) {
@@ -280,7 +283,9 @@ export default function App() {
       return;
     }
     setSaveState('saving');
-    await updateDoc(doc(db, 'sessions', currentId, 'annotations', id), { text });
+    await updateCloudAnnotation(currentId, id, text);
+    setAnnotations((a) => a.map((x) => (x.id === id ? { ...x, text } : x)));
+    setSaveState('saved');
   }
 
   async function deleteAnnotation(id) {
@@ -290,7 +295,9 @@ export default function App() {
       return;
     }
     setSaveState('saving');
-    await deleteDoc(doc(db, 'sessions', currentId, 'annotations', id));
+    await deleteCloudAnnotation(currentId, id);
+    setAnnotations((a) => a.filter((x) => x.id !== id));
+    setSaveState('saved');
   }
 
   function locateAnnotation(a) {
@@ -341,7 +348,7 @@ export default function App() {
             onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
           />
         </label>
-        {isDraft && isFirebaseConfigured && (
+        {isDraft && cloudSyncEnabled && (
           <button className="btn primary" onClick={saveToCloud}>保存到云端</button>
         )}
         <button
@@ -369,7 +376,7 @@ export default function App() {
           {!saveProgress && busy && '正在从云端下载文件…'}
           {!saveProgress && !busy && isDraft && '草稿仅保存在本机'}
           {!saveProgress && !busy && !isDraft && saveState === 'saving' && '保存中…'}
-          {!saveProgress && !busy && !isDraft && saveState === 'saved' && '已同步到 Firebase'}
+          {!saveProgress && !busy && !isDraft && saveState === 'saved' && '已同步到云端'}
         </span>
         {isDraft && <button className="btn danger" onClick={clearDraft}>清空</button>}
       </header>
