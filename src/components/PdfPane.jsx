@@ -4,8 +4,28 @@ import { Document, Page } from 'react-pdf';
 export default function PdfPane({
   pane, annotations, annotateMode, draft, selectedId,
   onPageClick, onCommitDraft, onCancelDraft, onSelect, onUpdate, onDelete,
-  onZoom, onRemove, onMissingFile, onNumPages, registerPageRef,
+  onZoom, onRemove, onMissingFile, onNumPages, registerPageRef, onReorder,
 }) {
+  const paneDragProps = {
+    onDragOver: (e) => {
+      if (e.dataTransfer.types.includes('application/x-pane-key')) e.preventDefault();
+    },
+    onDrop: (e) => {
+      const from = e.dataTransfer.getData('application/x-pane-key');
+      if (!from) return;
+      e.preventDefault();
+      e.stopPropagation();
+      onReorder(from, pane.key);
+    },
+  };
+  const headerDragProps = {
+    draggable: true,
+    title: '拖拽标题栏可调整文件顺序',
+    onDragStart: (e) => {
+      e.dataTransfer.setData('application/x-pane-key', pane.key);
+      e.dataTransfer.effectAllowed = 'move';
+    },
+  };
   const scrollRef = useRef(null);
   const [width, setWidth] = useState(0);
 
@@ -49,8 +69,8 @@ export default function PdfPane({
 
   if (pane.missing) {
     return (
-      <section className="pane">
-        <div className="pane-header">
+      <section className="pane" {...paneDragProps}>
+        <div className="pane-header" {...headerDragProps}>
           <span className="pane-title" title={pane.name}>{pane.name}</span>
           <button className="close" title="移除该文件" onClick={onRemove}>×</button>
         </div>
@@ -58,6 +78,7 @@ export default function PdfPane({
           className="missing"
           onDragOver={(e) => e.preventDefault()}
           onDrop={(e) => {
+            if (e.dataTransfer.types.includes('application/x-pane-key')) return;
             e.preventDefault();
             e.stopPropagation();
             const f = e.dataTransfer.files[0];
@@ -86,8 +107,8 @@ export default function PdfPane({
   }
 
   return (
-    <section className="pane">
-      <div className="pane-header">
+    <section className="pane" {...paneDragProps}>
+      <div className="pane-header" {...headerDragProps}>
         <span className="pane-title" title={pane.name}>{pane.name}</span>
         <div className="zoom-controls">
           <button onClick={() => onZoom(pane.scale - 0.25)} title="缩小">−</button>
