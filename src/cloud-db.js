@@ -21,6 +21,10 @@ export function updateSessionFiles(id, files) {
   return rtdbReq('PUT', `sessions/${id}/files`, files);
 }
 
+export function renameSession(id, name) {
+  return rtdbReq('PUT', `sessions/${id}/name`, name);
+}
+
 export function deleteCloudSession(id) {
   return Promise.all([
     rtdbReq('DELETE', `sessions/${id}`),
