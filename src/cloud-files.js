@@ -19,7 +19,7 @@ async function base64ToBlob(base64) {
   return res.blob();
 }
 
-async function req(method, path, body) {
+export async function rtdbReq(method, path, body) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), REQ_TIMEOUT);
   try {
@@ -35,9 +35,9 @@ async function req(method, path, body) {
   }
 }
 
-const putJson = (path, body) => req('PUT', path, body);
-const getJson = (path) => req('GET', path);
-const deletePath = (path) => req('DELETE', path);
+const putJson = (path, body) => rtdbReq('PUT', path, body);
+const getJson = (path) => rtdbReq('GET', path);
+const deletePath = (path) => rtdbReq('DELETE', path);
 
 export async function uploadSessionFile(sessionId, fileKey, name, blob) {
   if (!cloudSyncEnabled || blob.size > MAX_SYNC_SIZE) return false;
