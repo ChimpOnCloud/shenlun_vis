@@ -6,7 +6,8 @@ import {
 } from './cloud-files';
 import {
   addCloudAnnotation, createSession, deleteCloudAnnotation, deleteCloudSession,
-  listAnnotations, listSessions, updateCloudAnnotation, updateSessionFiles,
+  listAnnotations, listSessions, renameSession as renameCloudSession,
+  updateCloudAnnotation, updateSessionFiles,
 } from './cloud-db';
 import {
   clearDraftFiles, loadDraftFile, loadDraftFiles, removeDraftFile,
@@ -233,6 +234,15 @@ export default function App() {
     if (currentId === s.id) await backToDraft();
   }
 
+  async function renameSessionById(s) {
+    const name = window.prompt('重命名对比：', s.name);
+    if (name === null) return;
+    const trimmed = name.trim();
+    if (!trimmed || trimmed === s.name) return;
+    await renameCloudSession(s.id, trimmed);
+    await refreshSessions();
+  }
+
   async function removePane(key) {
     const pane = panes.find((p) => p.key === key);
     if (pane?.url) URL.revokeObjectURL(pane.url);
@@ -407,6 +417,7 @@ export default function App() {
             onOpen={openSession}
             onDelete={deleteSession}
             onNew={backToDraft}
+            onRename={renameSessionById}
           />
         )}
         {panes.length === 0 ? (
