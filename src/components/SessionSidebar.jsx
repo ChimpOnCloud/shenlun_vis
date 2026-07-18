@@ -1,4 +1,4 @@
-export default function SessionSidebar({ sessions, currentId, onOpen, onDelete, onNew }) {
+export default function SessionSidebar({ sessions, currentId, onOpen, onDelete, onNew, onRename }) {
   return (
     <aside className="sidebar">
       <button className="btn new-session" onClick={onNew}>＋ 新建对比</button>
@@ -18,6 +18,7 @@ export default function SessionSidebar({ sessions, currentId, onOpen, onDelete, 
                   : s.createdAt ? ` · ${new Date(s.createdAt).toLocaleDateString('zh-CN')}` : ''}
               </span>
             </button>
+            <button className="session-edit" title="重命名" onClick={() => onRename(s)}>✎</button>
             <button className="session-del" title="删除该对比" onClick={() => onDelete(s)}>×</button>
           </li>
         ))}
