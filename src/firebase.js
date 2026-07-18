@@ -1,9 +1,11 @@
 import { initializeApp } from 'firebase/app';
 import { getFirestore } from 'firebase/firestore';
+import { getDatabase } from 'firebase/database';
 
 const config = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
+  databaseURL: import.meta.env.VITE_FIREBASE_DATABASE_URL,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
   storageBucket: import.meta.env.VITE_FIREBASE_STORAGE_BUCKET,
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
@@ -11,4 +13,6 @@ const config = {
 };
 
 export const isFirebaseConfigured = Boolean(config.apiKey && config.projectId);
-export const db = isFirebaseConfigured ? getFirestore(initializeApp(config)) : null;
+const app = isFirebaseConfigured ? initializeApp(config) : null;
+export const db = app ? getFirestore(app) : null;
+export const rtdb = app && config.databaseURL ? getDatabase(app) : null;
