@@ -1,8 +1,9 @@
-import { get, ref, remove, set } from 'firebase/database';
-import { rtdb } from './firebase';
-
 const MAX_SYNC_SIZE = 50 * 1024 * 1024;
 const CHUNK_SIZE = 4 * 1024 * 1024;
+const REQ_TIMEOUT = 90 * 1000;
+
+const BASE_URL = (import.meta.env.VITE_FIREBASE_DATABASE_URL || '').replace(/\/$/, '');
+export const cloudSyncEnabled = Boolean(BASE_URL);
 
 function blobToBase64(blob) {
   return new Promise((resolve, reject) => {
@@ -18,20 +19,39 @@ async function base64ToBlob(base64) {
   return res.blob();
 }
 
+async function req(method, path, body) {
+  const ctrl = new AbortController();
+  const timer = setTimeout(() => ctrl.abort(), REQ_TIMEOUT);
+  try {
+    const res = await fetch(`${BASE_URL}/${path}.json`, {
+      method,
+      body: body === undefined ? undefined : JSON.stringify(body),
+      signal: ctrl.signal,
+    });
+    if (!res.ok) throw new Error(`RTDB ${method} ${path} -> ${res.status}`);
+    return res.status === 204 ? null : res.json();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+const putJson = (path, body) => req('PUT', path, body);
+const getJson = (path) => req('GET', path);
+const deletePath = (path) => req('DELETE', path);
+
 export async function uploadSessionFile(sessionId, fileKey, name, blob) {
-  if (!rtdb || blob.size > MAX_SYNC_SIZE) return false;
+  if (!cloudSyncEnabled || blob.size > MAX_SYNC_SIZE) return false;
   try {
     const path = `files/${sessionId}/${fileKey}`;
     const data = await blobToBase64(blob);
-    await remove(ref(rtdb, path));
     if (data.length <= CHUNK_SIZE) {
-      await set(ref(rtdb, path), { name, data, size: blob.size });
+      await putJson(path, { name, data, size: blob.size });
     } else {
       const chunkCount = Math.ceil(data.length / CHUNK_SIZE);
       for (let i = 0; i < chunkCount; i++) {
-        await set(ref(rtdb, `${path}/chunks/${i}`), data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
+        await putJson(`${path}/chunks/${i}`, data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE));
       }
-      await set(ref(rtdb, `${path}/meta`), { name, size: blob.size, chunked: true, chunkCount });
+      await putJson(`${path}/meta`, { name, size: blob.size, chunked: true, chunkCount });
     }
     return true;
   } catch (e) {
@@ -41,10 +61,9 @@ export async function uploadSessionFile(sessionId, fileKey, name, blob) {
 }
 
 export async function downloadSessionFile(sessionId, fileKey) {
-  if (!rtdb) return null;
-  const snap = await get(ref(rtdb, `files/${sessionId}/${fileKey}`));
-  if (!snap.exists()) return null;
-  const val = snap.val();
+  if (!cloudSyncEnabled) return null;
+  const val = await getJson(`files/${sessionId}/${fileKey}`);
+  if (!val) return null;
   if (typeof val.data === 'string') {
     return { name: val.name, blob: await base64ToBlob(val.data) };
   }
@@ -61,17 +80,16 @@ export async function downloadSessionFile(sessionId, fileKey) {
 }
 
 export async function cloudFileExists(sessionId, fileKey) {
-  if (!rtdb) return true;
+  if (!cloudSyncEnabled) return true;
   try {
-    const snap = await get(ref(rtdb, `files/${sessionId}/${fileKey}`));
-    return snap.exists();
+    return (await getJson(`files/${sessionId}/${fileKey}`)) !== null;
   } catch {
     return true;
   }
 }
 
 export const removeCloudFile = (sessionId, fileKey) =>
-  rtdb && remove(ref(rtdb, `files/${sessionId}/${fileKey}`));
+  cloudSyncEnabled && deletePath(`files/${sessionId}/${fileKey}`);
 
 export const removeCloudSessionFiles = (sessionId) =>
-  rtdb && remove(ref(rtdb, `files/${sessionId}`));
+  cloudSyncEnabled && deletePath(`files/${sessionId}`);
