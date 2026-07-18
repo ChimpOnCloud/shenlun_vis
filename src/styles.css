@@ -406,6 +406,16 @@ body {
 }
 .session-del:hover { color: #dc2626; }
 
+.session-edit {
+  border: none;
+  background: none;
+  color: #9ca3af;
+  cursor: pointer;
+  font-size: 14px;
+  padding: 0 2px;
+}
+.session-edit:hover { color: #2563eb; }
+
 /* 模式徽标 */
 .mode-badge {
   font-size: 12px;
