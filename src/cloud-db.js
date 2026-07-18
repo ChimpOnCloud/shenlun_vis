@@ -1,5 +1,7 @@
 import { cloudSyncEnabled, rtdbReq } from './cloud-files';
 
+export const CATEGORIES = ['概括题', '词句理解题', '公文题', '大作文'];
+
 const objToList = (obj) =>
   obj ? Object.entries(obj).map(([id, v]) => ({ id, ...v })) : [];
 
@@ -9,12 +11,17 @@ export async function listSessions() {
   return objToList(data).sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0));
 }
 
-export function createSession(id, { name, files }) {
+export function createSession(id, { name, files, category }) {
   return rtdbReq('PUT', `sessions/${id}`, {
     name,
     createdAt: Date.now(),
     files: files || [],
+    category: category || null,
   });
+}
+
+export function setSessionCategory(id, category) {
+  return rtdbReq('PUT', `sessions/${id}/category`, category);
 }
 
 export function updateSessionFiles(id, files) {
