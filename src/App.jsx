@@ -251,6 +251,20 @@ export default function App() {
     }
   }
 
+  async function movePane(fromKey, toKey) {
+    if (fromKey === toKey) return;
+    const from = panes.findIndex((p) => p.key === fromKey);
+    const to = panes.findIndex((p) => p.key === toKey);
+    if (from < 0 || to < 0) return;
+    const next = [...panes];
+    const [moved] = next.splice(from, 1);
+    next.splice(to, 0, moved);
+    setPanes(next);
+    if (!isDraft) {
+      await updateSessionFiles(currentId, next.map(({ key, name }) => ({ key, name })));
+    }
+  }
+
   function setScale(key, scale) {
     setPanes((p) => p.map((x) => (
       x.key === key ? { ...x, scale: Math.min(3, Math.max(0.5, scale)) } : x
@@ -415,6 +429,7 @@ export default function App() {
                 onDelete={deleteAnnotation}
                 onZoom={(s) => setScale(pane.key, s)}
                 onRemove={() => removePane(pane.key)}
+                onReorder={movePane}
                 onMissingFile={(f) => handleMissingFile(pane.key, f)}
                 onNumPages={(n) => setPanes((p) => p.map((x) => (
                   x.key === pane.key ? { ...x, numPages: n } : x
