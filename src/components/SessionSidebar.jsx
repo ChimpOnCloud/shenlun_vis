@@ -1,10 +1,13 @@
 import { useState } from 'react';
 import { CATEGORIES } from '../cloud-db';
 
+const DRAG_TYPE = 'application/x-session-id';
+
 export default function SessionSidebar({
   sessions, currentId, onOpen, onDelete, onNew, onRename, onMoveCategory,
 }) {
   const [collapsed, setCollapsed] = useState({});
+  const [dragOverCat, setDragOverCat] = useState(null);
 
   const groups = CATEGORIES.map((c) => ({ name: c, items: [] }));
   const uncategorized = [];
@@ -17,8 +20,36 @@ export default function SessionSidebar({
 
   const toggle = (name) => setCollapsed((c) => ({ ...c, [name]: !c[name] }));
 
+  const groupDropProps = (g) => ({
+    onDragOver: (e) => {
+      if (!e.dataTransfer.types.includes(DRAG_TYPE)) return;
+      e.preventDefault();
+      if (dragOverCat !== g.name) setDragOverCat(g.name);
+    },
+    onDragLeave: () => {
+      if (dragOverCat === g.name) setDragOverCat(null);
+    },
+    onDrop: (e) => {
+      const id = e.dataTransfer.getData(DRAG_TYPE);
+      setDragOverCat(null);
+      if (!id) return;
+      e.preventDefault();
+      const s = sessions.find((x) => x.id === id);
+      if (!s) return;
+      onMoveCategory(s, g.name === '未分类' ? '' : g.name);
+    },
+  });
+
   const renderItem = (s) => (
-    <li key={s.id} className={s.id === currentId ? 'active' : ''}>
+    <li
+      key={s.id}
+      className={s.id === currentId ? 'active' : ''}
+      draggable
+      onDragStart={(e) => {
+        e.dataTransfer.setData(DRAG_TYPE, s.id);
+        e.dataTransfer.effectAllowed = 'move';
+      }}
+    >
       <button className="session-item" onClick={() => onOpen(s)}>
         <span className="session-name">{s.name}</span>
         <span className="session-meta">
@@ -42,7 +73,11 @@ export default function SessionSidebar({
         <p className="hint">还没有保存过的对比。拖入 PDF 后点「保存到云端」，这里就会出现一条记录。</p>
       )}
       {groups.map((g) => (
-        <div className="cat-group" key={g.name}>
+        <div
+          className={`cat-group ${dragOverCat === g.name ? 'drag-over' : ''}`}
+          key={g.name}
+          {...groupDropProps(g)}
+        >
           <button className="cat-header" onClick={() => toggle(g.name)}>
             <span className="cat-arrow">{collapsed[g.name] ? '▸' : '▾'}</span>
             {g.name}
@@ -51,7 +86,7 @@ export default function SessionSidebar({
           {!collapsed[g.name] && (
             g.items.length
               ? <ul>{g.items.map(renderItem)}</ul>
-              : <p className="cat-empty">暂无对比</p>
+              : <p className="cat-empty">暂无对比，可把左侧记录拖进来</p>
           )}
         </div>
       ))}
