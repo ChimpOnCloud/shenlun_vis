@@ -352,7 +352,16 @@ body {
   margin: 12px 0 8px;
 }
 
-.cat-group { margin-bottom: 4px; }
+.cat-group { margin-bottom: 4px; border-radius: 8px; }
+
+.cat-group.drag-over {
+  outline: 2px dashed #2563eb;
+  outline-offset: -2px;
+  background: #eff6ff;
+}
+
+.sidebar li[draggable="true"] { cursor: grab; }
+.sidebar li[draggable="true"]:active { cursor: grabbing; }
 
 .cat-header {
   display: flex;
