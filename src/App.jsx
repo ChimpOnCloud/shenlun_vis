@@ -1,13 +1,19 @@
 import { useEffect, useRef, useState } from 'react';
 import { pdfjs } from 'react-pdf';
 import {
-  addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, serverTimestamp, setDoc, updateDoc,
+  addDoc, collection, deleteDoc, doc, getDocs, onSnapshot, orderBy, query,
+  serverTimestamp, updateDoc, writeBatch,
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured } from './firebase';
-import { clearFiles, loadFiles, removeFile, saveFile } from './store';
+import {
+  clearDraftFiles, loadDraftFile, loadDraftFiles, removeDraftFile,
+  loadSessionFile, removeSessionFile, removeSessionFiles,
+  saveDraftFile, saveSessionFile,
+} from './store';
 import DropZone from './components/DropZone';
 import PdfPane from './components/PdfPane';
 import AnnotationPanel from './components/AnnotationPanel';
+import SessionSidebar from './components/SessionSidebar';
 
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   'pdfjs-dist/build/pdf.worker.min.mjs',
@@ -15,47 +21,101 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 ).toString();
 
 const MAX_FILES = 3;
+const DRAFT_ANN_KEY = 'shenlun_draft_annotations';
 
-function getWorkspaceId() {
-  let id = localStorage.getItem('shenlun_ws');
-  if (!id) {
-    id = crypto.randomUUID();
-    localStorage.setItem('shenlun_ws', id);
+function readDraftAnnotations() {
+  try {
+    return JSON.parse(localStorage.getItem(DRAFT_ANN_KEY) || '[]');
+  } catch {
+    return [];
   }
-  return id;
 }
 
 export default function App() {
+  const [sessions, setSessions] = useState([]);
+  const [currentId, setCurrentId] = useState(null);
   const [panes, setPanes] = useState([]);
   const [annotations, setAnnotations] = useState([]);
   const [annotateMode, setAnnotateMode] = useState(false);
   const [draft, setDraft] = useState(null);
   const [selectedId, setSelectedId] = useState(null);
-  const [saveState, setSaveState] = useState(isFirebaseConfigured ? 'saved' : 'local');
-  const wsId = useRef(getWorkspaceId()).current;
+  const [saveState, setSaveState] = useState('saved');
   const pageRefs = useRef(new Map());
+  const draftLoaded = useRef(false);
+  const isDraft = currentId === null;
+  const currentSession = sessions.find((s) => s.id === currentId);
 
   useEffect(() => {
-    loadFiles().then((items) => {
-      setPanes(items.map((it) => ({
-        key: it.key,
-        url: URL.createObjectURL(it.blob),
-        name: it.name,
-        numPages: 0,
-        scale: 1,
+    (async () => {
+      const files = await loadDraftFiles();
+      const anns = readDraftAnnotations();
+      draftLoaded.current = true;
+      setPanes(files.map((f) => ({
+        key: f.key, name: f.name, url: URL.createObjectURL(f.blob), numPages: 0, scale: 1,
       })));
-    });
+      setAnnotations(anns);
+    })();
   }, []);
 
   useEffect(() => {
     if (!isFirebaseConfigured) return undefined;
-    setDoc(doc(db, 'workspaces', wsId), { createdAt: serverTimestamp() }, { merge: true });
-    const unsub = onSnapshot(collection(db, 'workspaces', wsId, 'annotations'), (snap) => {
+    const q = query(collection(db, 'sessions'), orderBy('createdAt', 'desc'));
+    return onSnapshot(q, (snap) => {
+      setSessions(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
+    });
+  }, []);
+
+  useEffect(() => {
+    if (!currentId || !isFirebaseConfigured) return undefined;
+    return onSnapshot(collection(db, 'sessions', currentId, 'annotations'), (snap) => {
       setAnnotations(snap.docs.map((d) => ({ id: d.id, ...d.data() })));
       setSaveState('saved');
     });
-    return unsub;
-  }, [wsId]);
+  }, [currentId]);
+
+  useEffect(() => {
+    if (isDraft && draftLoaded.current) {
+      localStorage.setItem(DRAFT_ANN_KEY, JSON.stringify(annotations));
+    }
+  }, [annotations, isDraft]);
+
+  function revokePanes(list = panes) {
+    for (const p of list) if (p.url) URL.revokeObjectURL(p.url);
+  }
+
+  async function openSession(s) {
+    if (s.id === currentId) return;
+    const newPanes = await Promise.all((s.files || []).map(async (f) => {
+      const rec = await loadSessionFile(s.id, f.key);
+      return {
+        key: f.key,
+        name: f.name,
+        numPages: 0,
+        scale: 1,
+        url: rec ? URL.createObjectURL(rec.blob) : null,
+        missing: !rec,
+      };
+    }));
+    revokePanes();
+    setPanes(newPanes);
+    setAnnotations([]);
+    setDraft(null);
+    setSelectedId(null);
+    setCurrentId(s.id);
+  }
+
+  async function backToDraft() {
+    if (isDraft) return;
+    const files = await loadDraftFiles();
+    revokePanes();
+    setPanes(files.map((f) => ({
+      key: f.key, name: f.name, url: URL.createObjectURL(f.blob), numPages: 0, scale: 1,
+    })));
+    setAnnotations(readDraftAnnotations());
+    setDraft(null);
+    setSelectedId(null);
+    setCurrentId(null);
+  }
 
   async function addFiles(fileList) {
     const files = [...fileList]
@@ -65,24 +125,80 @@ export default function App() {
     const newPanes = [];
     for (const file of files) {
       const key = crypto.randomUUID();
-      await saveFile(key, file);
-      newPanes.push({ key, url: URL.createObjectURL(file), name: file.name, numPages: 0, scale: 1 });
+      if (isDraft) await saveDraftFile(key, file);
+      else await saveSessionFile(currentId, key, file.name, file);
+      newPanes.push({ key, name: file.name, url: URL.createObjectURL(file), numPages: 0, scale: 1 });
     }
-    setPanes((p) => [...p, ...newPanes]);
+    const all = [...panes, ...newPanes];
+    setPanes(all);
+    if (!isDraft) {
+      await updateDoc(doc(db, 'sessions', currentId), {
+        files: all.map(({ key, name }) => ({ key, name })),
+      });
+    }
+  }
+
+  async function saveToCloud() {
+    if (!isFirebaseConfigured) return;
+    if (!panes.length) {
+      window.alert('请先拖入 PDF 文件');
+      return;
+    }
+    const name = window.prompt('给这次对比起个名字：', `对比 ${new Date().toLocaleString('zh-CN')}`);
+    if (name === null) return;
+    setSaveState('saving');
+    const sessionRef = await addDoc(collection(db, 'sessions'), {
+      name: name.trim() || '未命名对比',
+      createdAt: serverTimestamp(),
+      files: panes.map(({ key, name: n }) => ({ key, name: n })),
+    });
+    if (annotations.length) {
+      const batch = writeBatch(db);
+      for (const a of annotations) {
+        const { id, ...data } = a;
+        batch.set(doc(collection(db, 'sessions', sessionRef.id, 'annotations')), {
+          ...data,
+          createdAt: serverTimestamp(),
+        });
+      }
+      await batch.commit();
+    }
+    for (const p of panes) {
+      const rec = await loadDraftFile(p.key);
+      if (rec) await saveSessionFile(sessionRef.id, p.key, p.name, rec.blob);
+    }
+    await clearDraftFiles();
+    localStorage.removeItem(DRAFT_ANN_KEY);
+    setCurrentId(sessionRef.id);
+  }
+
+  async function deleteSession(s) {
+    if (!window.confirm(`删除「${s.name}」及其所有批注？此操作不可恢复。`)) return;
+    const annSnap = await getDocs(collection(db, 'sessions', s.id, 'annotations'));
+    for (const d of annSnap.docs) await deleteDoc(d.ref);
+    await deleteDoc(doc(db, 'sessions', s.id));
+    await removeSessionFiles(s.id);
+    if (currentId === s.id) await backToDraft();
   }
 
   async function removePane(key) {
     const pane = panes.find((p) => p.key === key);
-    if (pane) URL.revokeObjectURL(pane.url);
-    setPanes((p) => p.filter((x) => x.key !== key));
-    await removeFile(key);
-    const doomed = annotations.filter((a) => a.fileKey === key);
-    if (isFirebaseConfigured) {
+    if (pane?.url) URL.revokeObjectURL(pane.url);
+    const rest = panes.filter((x) => x.key !== key);
+    setPanes(rest);
+    if (isDraft) {
+      await removeDraftFile(key);
+      setAnnotations((a) => a.filter((x) => x.fileKey !== key));
+    } else {
+      await removeSessionFile(currentId, key);
+      await updateDoc(doc(db, 'sessions', currentId), {
+        files: rest.map(({ key: k, name }) => ({ key: k, name })),
+      });
+      const doomed = annotations.filter((a) => a.fileKey === key);
       for (const a of doomed) {
-        await deleteDoc(doc(db, 'workspaces', wsId, 'annotations', a.id));
+        await deleteDoc(doc(db, 'sessions', currentId, 'annotations', a.id));
       }
     }
-    setAnnotations((a) => a.filter((x) => x.fileKey !== key));
   }
 
   function setScale(key, scale) {
@@ -99,12 +215,12 @@ export default function App() {
   async function commitDraft(text) {
     const data = { ...draft, text };
     setDraft(null);
-    if (!isFirebaseConfigured) {
+    if (isDraft) {
       setAnnotations((a) => [...a, { id: crypto.randomUUID(), ...data }]);
       return;
     }
     setSaveState('saving');
-    await addDoc(collection(db, 'workspaces', wsId, 'annotations'), {
+    await addDoc(collection(db, 'sessions', currentId, 'annotations'), {
       ...data,
       createdAt: serverTimestamp(),
     });
@@ -112,22 +228,22 @@ export default function App() {
 
   async function updateAnnotation(id, text) {
     setSelectedId(null);
-    if (!isFirebaseConfigured) {
+    if (isDraft) {
       setAnnotations((a) => a.map((x) => (x.id === id ? { ...x, text } : x)));
       return;
     }
     setSaveState('saving');
-    await updateDoc(doc(db, 'workspaces', wsId, 'annotations', id), { text });
+    await updateDoc(doc(db, 'sessions', currentId, 'annotations', id), { text });
   }
 
   async function deleteAnnotation(id) {
     setSelectedId((s) => (s === id ? null : s));
-    if (!isFirebaseConfigured) {
+    if (isDraft) {
       setAnnotations((a) => a.filter((x) => x.id !== id));
       return;
     }
     setSaveState('saving');
-    await deleteDoc(doc(db, 'workspaces', wsId, 'annotations', id));
+    await deleteDoc(doc(db, 'sessions', currentId, 'annotations', id));
   }
 
   function locateAnnotation(a) {
@@ -137,16 +253,21 @@ export default function App() {
       ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }
 
-  async function clearWorkspace() {
-    if (!window.confirm('确定清空所有文件和批注？此操作不可恢复。')) return;
-    for (const p of panes) URL.revokeObjectURL(p.url);
+  async function clearDraft() {
+    if (!window.confirm('清空当前草稿的所有文件和批注？')) return;
+    revokePanes();
     setPanes([]);
-    await clearFiles();
-    if (isFirebaseConfigured) {
-      const snap = await getDocs(collection(db, 'workspaces', wsId, 'annotations'));
-      for (const d of snap.docs) await deleteDoc(d.ref);
-    }
     setAnnotations([]);
+    await clearDraftFiles();
+    localStorage.removeItem(DRAFT_ANN_KEY);
+  }
+
+  async function handleMissingFile(fileKey, file) {
+    if (file.type !== 'application/pdf' || isDraft) return;
+    await saveSessionFile(currentId, fileKey, file.name, file);
+    setPanes((p) => p.map((x) => (
+      x.key === fileKey ? { ...x, url: URL.createObjectURL(file), missing: false } : x
+    )));
   }
 
   const registerPageRef = (id) => (el) => {
@@ -158,6 +279,9 @@ export default function App() {
     <div className="app">
       <header className="toolbar">
         <h1>申论对比批注</h1>
+        <span className={`mode-badge ${isDraft ? 'draft' : 'saved'}`}>
+          {isDraft ? '草稿（未保存）' : `当前：${currentSession?.name || '…'}`}
+        </span>
         <label className={`btn ${panes.length >= MAX_FILES ? 'disabled' : ''}`}>
           添加文件 ({panes.length}/{MAX_FILES})
           <input
@@ -169,6 +293,9 @@ export default function App() {
             onChange={(e) => { addFiles(e.target.files); e.target.value = ''; }}
           />
         </label>
+        {isDraft && isFirebaseConfigured && (
+          <button className="btn primary" onClick={saveToCloud}>保存到云端</button>
+        )}
         <button
           className={`btn ${annotateMode ? 'active' : ''}`}
           onClick={() => { setAnnotateMode(!annotateMode); setDraft(null); }}
@@ -176,11 +303,11 @@ export default function App() {
           {annotateMode ? '退出批注模式' : '添加批注'}
         </button>
         <span className={`save-state ${saveState}`}>
-          {saveState === 'local' && '本地模式（未配置 Firebase）'}
-          {saveState === 'saving' && '保存中…'}
-          {saveState === 'saved' && '已同步到 Firebase'}
+          {isDraft && '草稿仅保存在本机'}
+          {!isDraft && saveState === 'saving' && '保存中…'}
+          {!isDraft && saveState === 'saved' && '已同步到 Firebase'}
         </span>
-        <button className="btn danger" onClick={clearWorkspace}>清空</button>
+        {isDraft && <button className="btn danger" onClick={clearDraft}>清空</button>}
       </header>
 
       <div
@@ -188,6 +315,13 @@ export default function App() {
         onDragOver={(e) => e.preventDefault()}
         onDrop={(e) => { e.preventDefault(); addFiles(e.dataTransfer.files); }}
       >
+        <SessionSidebar
+          sessions={sessions}
+          currentId={currentId}
+          onOpen={openSession}
+          onDelete={deleteSession}
+          onNew={backToDraft}
+        />
         {panes.length === 0 ? (
           <DropZone onFiles={addFiles} />
         ) : (
@@ -208,6 +342,7 @@ export default function App() {
                 onDelete={deleteAnnotation}
                 onZoom={(s) => setScale(pane.key, s)}
                 onRemove={() => removePane(pane.key)}
+                onMissingFile={(f) => handleMissingFile(pane.key, f)}
                 onNumPages={(n) => setPanes((p) => p.map((x) => (
                   x.key === pane.key ? { ...x, numPages: n } : x
                 )))}
