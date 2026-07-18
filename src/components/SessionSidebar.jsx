@@ -13,7 +13,9 @@ export default function SessionSidebar({ sessions, currentId, onOpen, onDelete, 
               <span className="session-name">{s.name}</span>
               <span className="session-meta">
                 {(s.files || []).length} 份文件
-                {s.createdAt?.toDate ? ` · ${s.createdAt.toDate().toLocaleDateString('zh-CN')}` : ''}
+                {s.createdAt?.toDate
+                  ? ` · ${s.createdAt.toDate().toLocaleDateString('zh-CN')}`
+                  : s.createdAt ? ` · ${new Date(s.createdAt).toLocaleDateString('zh-CN')}` : ''}
               </span>
             </button>
             <button className="session-del" title="删除该对比" onClick={() => onDelete(s)}>×</button>
