@@ -5,9 +5,9 @@ import {
   removeCloudFile, removeCloudSessionFiles, uploadSessionFile,
 } from './cloud-files';
 import {
-  addCloudAnnotation, createSession, deleteCloudAnnotation, deleteCloudSession,
+  addCloudAnnotation, CATEGORIES, createSession, deleteCloudAnnotation, deleteCloudSession,
   listAnnotations, listSessions, renameSession as renameCloudSession,
-  updateCloudAnnotation, updateSessionFiles,
+  setSessionCategory, updateCloudAnnotation, updateSessionFiles,
 } from './cloud-db';
 import {
   clearDraftFiles, loadDraftFile, loadDraftFiles, removeDraftFile,
@@ -33,6 +33,18 @@ function readDraftAnnotations() {
   } catch {
     return [];
   }
+}
+
+function pickCategory() {
+  const list = CATEGORIES.map((c, i) => `${i + 1}. ${c}`).join('\n');
+  const input = window.prompt(`选择分类（输入数字，取消则不分类）：\n${list}`);
+  if (input === null) return null;
+  const idx = parseInt(input, 10) - 1;
+  if (!CATEGORIES[idx]) {
+    window.alert('无效的分类编号');
+    return null;
+  }
+  return CATEGORIES[idx];
 }
 
 export default function App() {
@@ -190,6 +202,7 @@ export default function App() {
     }
     const name = window.prompt('给这次对比起个名字：', `对比 ${new Date().toLocaleString('zh-CN')}`);
     if (name === null) return;
+    const category = pickCategory();
     setSaveState('saving');
     const sessionId = crypto.randomUUID();
     const failed = [];
@@ -210,6 +223,7 @@ export default function App() {
     await createSession(sessionId, {
       name: name.trim() || '未命名对比',
       files: panes.map(({ key, name: n }) => ({ key, name: n })),
+      category,
     });
     await Promise.all(annotations.map((a) => {
       const { id, ...data } = a;
@@ -240,6 +254,13 @@ export default function App() {
     const trimmed = name.trim();
     if (!trimmed || trimmed === s.name) return;
     await renameCloudSession(s.id, trimmed);
+    await refreshSessions();
+  }
+
+  async function moveSessionCategory(s) {
+    const category = pickCategory();
+    if (!category || category === s.category) return;
+    await setSessionCategory(s.id, category);
     await refreshSessions();
   }
 
@@ -418,6 +439,7 @@ export default function App() {
             onDelete={deleteSession}
             onNew={backToDraft}
             onRename={renameSessionById}
+            onMoveCategory={moveSessionCategory}
           />
         )}
         {panes.length === 0 ? (
