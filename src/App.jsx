@@ -6,7 +6,7 @@ import {
 } from 'firebase/firestore';
 import { db, isFirebaseConfigured, rtdb } from './firebase';
 import {
-  downloadSessionFile, removeCloudFile, removeCloudSessionFiles, uploadSessionFile,
+  cloudFileExists, downloadSessionFile, removeCloudFile, removeCloudSessionFiles, uploadSessionFile,
 } from './cloud-files';
 import {
   clearDraftFiles, loadDraftFile, loadDraftFiles, removeDraftFile,
@@ -44,6 +44,7 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(null);
   const [saveState, setSaveState] = useState('saved');
   const [busy, setBusy] = useState(false);
+  const [saveProgress, setSaveProgress] = useState(null);
   const [showSidebar, setShowSidebar] = useState(true);
   const [showPanel, setShowPanel] = useState(true);
   const pageRefs = useRef(new Map());
@@ -94,7 +95,11 @@ export default function App() {
     setBusy(true);
     const newPanes = await Promise.all((s.files || []).map(async (f) => {
       let rec = await loadSessionFile(s.id, f.key);
-      if (!rec && rtdb) {
+      if (rec && rtdb) {
+        cloudFileExists(s.id, f.key).then((exists) => {
+          if (!exists) uploadSessionFile(s.id, f.key, f.name, rec.blob);
+        });
+      } else if (!rec && rtdb) {
         try {
           const cloud = await downloadSessionFile(s.id, f.key);
           if (cloud) {
@@ -149,7 +154,7 @@ export default function App() {
       } else {
         await saveSessionFile(currentId, key, file.name, file);
         const synced = await uploadSessionFile(currentId, key, file.name, file);
-        if (!synced && rtdb) window.alert(`「${file.name}」未能同步到云端（超过 10MB 或网络问题），其他设备需手动拖入`);
+        if (!synced && rtdb) window.alert(`「${file.name}」未能同步到云端（超过 50MB 或网络问题），其他设备需手动拖入`);
       }
       newPanes.push({ key, name: file.name, url: URL.createObjectURL(file), numPages: 0, scale: 1 });
     }
@@ -171,7 +176,23 @@ export default function App() {
     const name = window.prompt('给这次对比起个名字：', `对比 ${new Date().toLocaleString('zh-CN')}`);
     if (name === null) return;
     setSaveState('saving');
-    const sessionRef = await addDoc(collection(db, 'sessions'), {
+    const sessionRef = doc(collection(db, 'sessions'));
+    const failed = [];
+    let done = 0;
+    setSaveProgress({ done, total: panes.length });
+    for (const p of panes) {
+      const rec = await loadDraftFile(p.key);
+      if (rec) {
+        await saveSessionFile(sessionRef.id, p.key, p.name, rec.blob);
+        const synced = await uploadSessionFile(sessionRef.id, p.key, p.name, rec.blob);
+        if (!synced) failed.push(p.name);
+      } else {
+        failed.push(p.name);
+      }
+      done += 1;
+      setSaveProgress({ done, total: panes.length });
+    }
+    await setDoc(sessionRef, {
       name: name.trim() || '未命名对比',
       createdAt: serverTimestamp(),
       files: panes.map(({ key, name: n }) => ({ key, name: n })),
@@ -187,17 +208,13 @@ export default function App() {
       }
       await batch.commit();
     }
-    for (const p of panes) {
-      const rec = await loadDraftFile(p.key);
-      if (rec) {
-        await saveSessionFile(sessionRef.id, p.key, p.name, rec.blob);
-        const synced = await uploadSessionFile(sessionRef.id, p.key, p.name, rec.blob);
-        if (!synced && rtdb) window.alert(`「${p.name}」未能同步到云端（超过 10MB 或网络问题），其他设备需手动拖入`);
-      }
-    }
+    setSaveProgress(null);
     await clearDraftFiles();
     localStorage.removeItem(DRAFT_ANN_KEY);
     setCurrentId(sessionRef.id);
+    if (failed.length) {
+      window.alert(`以下文件未能同步到云端，下次在本机打开该会话时会自动重试：\n${failed.join('\n')}`);
+    }
   }
 
   async function deleteSession(s) {
@@ -348,10 +365,11 @@ export default function App() {
           批注列表
         </button>
         <span className={`save-state ${saveState}`}>
-          {busy && '正在从云端下载文件…'}
-          {!busy && isDraft && '草稿仅保存在本机'}
-          {!busy && !isDraft && saveState === 'saving' && '保存中…'}
-          {!busy && !isDraft && saveState === 'saved' && '已同步到 Firebase'}
+          {saveProgress && `正在上传文件 ${saveProgress.done}/${saveProgress.total}…（请勿关闭页面）`}
+          {!saveProgress && busy && '正在从云端下载文件…'}
+          {!saveProgress && !busy && isDraft && '草稿仅保存在本机'}
+          {!saveProgress && !busy && !isDraft && saveState === 'saving' && '保存中…'}
+          {!saveProgress && !busy && !isDraft && saveState === 'saved' && '已同步到 Firebase'}
         </span>
         {isDraft && <button className="btn danger" onClick={clearDraft}>清空</button>}
       </header>
